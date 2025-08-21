@@ -1,0 +1,15 @@
+** Anon_03D9 se ha conectado (puerto 12345) a las 11:33:36 **
+Anon_03D9 envió a las 11:33:36 esto : Hola mundo
+** Anon_F594 se ha conectado (puerto 12345) a las 13:05:01 **
+Anon_F594 envió a las 13:05:01 esto : asdasdasd
+** Anon_F594 se ha desconectado (puerto 12345) a las 13:08:28 **
+** Anon_3EAE se ha conectado (puerto 12345) a las 13:20:09 **
+Anon_3EAE envió a las 13:20:09 esto : Hola hijos de puta aca el iluminado 7 comentando para un nuevo video
+** Sergio se ha conectado (puerto 12345) a las 13:45:21 **
+Sergio envió a las 13:45:44 esto : Hola muchachos, esto es una prueba
+** Sergio se ha conectado (puerto 12345) a las 14:24:36 **
+** Alexis se ha conectado (puerto 12345) a las 14:24:49 **
+Alexis envió a las 14:24:58 esto : HOLA
+** Alexis se ha desconectado (puerto 12345) a las 14:29:18 **
+** Sergio se ha conectado (puerto 12345) a las 14:38:26 **
+** Sergio se ha desconectado (puerto 12345) a las 14:43:55 **

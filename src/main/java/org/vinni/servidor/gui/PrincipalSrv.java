@@ -13,52 +13,47 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public class PrincipalSrv extends JFrame {
 
-    private JTextArea mensajesTxt;
-    private JCheckBox[] puertoChecks;
+
+    private final Servidor_interfaz ui;
+
 
     private final int[] PUERTOS = {12345, 12346, 12347, 12348, 12349};
 
+
     private final ConcurrentHashMap<Integer, ServidorPuerto> servidores = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Integer, JRadioButton> botonesPorPuerto = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Integer, JTextArea> areasPorPuerto = new ConcurrentHashMap<>();
 
     public PrincipalSrv() {
-        initComponents();
+        ui = new Servidor_interfaz();
+
+        setContentPane(ui.BG_SERVER);
+        setTitle("Servidor TCP - Multi Puerto");
+        setDefaultCloseOperation(EXIT_ON_CLOSE);
+        setSize(700, 600);
+        setLocationRelativeTo(null);
+
+
+        configurarPuerto(12345, ui.a12345RadioButton, ui.textArea1);
+        configurarPuerto(12346, ui.a12346RadioButton, ui.textArea2);
+        configurarPuerto(12347, ui.a12347RadioButton, ui.textArea3);
+        configurarPuerto(12348, ui.a12348RadioButton, ui.textArea4);
+        configurarPuerto(12349, ui.a12349RadioButton, ui.textArea5);
     }
 
-    private void initComponents() {
-        setTitle("Servidor Multi-Puerto");
-        setDefaultCloseOperation(EXIT_ON_CLOSE);
-        setSize(700, 460);
-        setLayout(null);
+    private void configurarPuerto(int puerto, JRadioButton boton, JTextArea area) {
+        botonesPorPuerto.put(puerto, boton);
+        areasPorPuerto.put(puerto, area);
 
-        JLabel titulo = new JLabel("SERVIDOR MULTIPUERTO", SwingConstants.CENTER);
-        titulo.setBounds(200, 10, 300, 30);
-        add(titulo);
-
-        puertoChecks = new JCheckBox[PUERTOS.length];
-        for (int i = 0; i < PUERTOS.length; i++) {
-            final int idx = i;
-            int puerto = PUERTOS[i];
-
-            puertoChecks[i] = new JCheckBox("Puerto " + puerto);
-            puertoChecks[i].setBounds(20, 50 + (i * 30), 150, 25);
-            add(puertoChecks[i]);
-
-            puertoChecks[i].addActionListener(e -> {
-                if (puertoChecks[idx].isSelected()) {
-                    iniciarServidor(puerto);
-                } else {
-                    detenerServidor(puerto);
-                }
-            });
-        }
-
-        mensajesTxt = new JTextArea();
-        mensajesTxt.setEditable(false);
-        JScrollPane scroll = new JScrollPane(mensajesTxt);
-        scroll.setBounds(200, 50, 470, 340);
-        add(scroll);
-
-        setLocationRelativeTo(null);
+        boton.addActionListener(e -> {
+            if (boton.isSelected()) {
+                iniciarServidor(puerto);
+                boton.setText("Puerto " + puerto + " ✅ Encendido");
+            } else {
+                detenerServidor(puerto);
+                boton.setText("Puerto " + puerto + " ⛔ Apagado");
+            }
+        });
     }
 
     private void iniciarServidor(int puerto) {
@@ -66,7 +61,7 @@ public class PrincipalSrv extends JFrame {
             ServidorPuerto servidor = new ServidorPuerto(puerto, this);
             servidores.put(puerto, servidor);
             servidor.start();
-            log("Servidor iniciado en puerto " + puerto);
+            log(puerto, "Servidor iniciado en puerto " + puerto);
         }
     }
 
@@ -74,12 +69,31 @@ public class PrincipalSrv extends JFrame {
         ServidorPuerto servidor = servidores.remove(puerto);
         if (servidor != null) {
             servidor.detener();
-            log("Servidor detenido en puerto " + puerto);
+            log(puerto, "Servidor detenido en puerto " + puerto);
+
+            // Reinicio automático después de 3 segundos
+            new Thread(() -> {
+                try {
+                    Thread.sleep(3000);
+                    iniciarServidor(puerto);
+                    SwingUtilities.invokeLater(() -> {
+                        JRadioButton boton = botonesPorPuerto.get(puerto);
+                        if (boton != null) {
+                            boton.setSelected(true);
+                            boton.setText("Puerto " + puerto + " ✅ Encendido");
+                        }
+                    });
+                } catch (InterruptedException ignored) {}
+            }).start();
         }
     }
 
-    public void log(String mensaje) {
-        SwingUtilities.invokeLater(() -> mensajesTxt.append(mensaje + "\n"));
+
+    public void log(int puerto, String mensaje) {
+        JTextArea area = areasPorPuerto.get(puerto);
+        if (area != null) {
+            SwingUtilities.invokeLater(() -> area.append(mensaje + "\n"));
+        }
     }
 
     public static void main(String[] args) {
@@ -116,31 +130,36 @@ class ServidorPuerto extends Thread {
             Files.createDirectories(dirLogs);
             Files.createDirectories(dirImgs);
         } catch (IOException e) {
-            gui.log("No se pudieron crear directorios de datos para el puerto " + puerto + ": " + e.getMessage());
+            gui.log(puerto, "No se pudieron crear directorios para el puerto " + puerto + ": " + e.getMessage());
         }
     }
 
     @Override
     public void run() {
-        try {
-            serverSocket = new ServerSocket(puerto);
-            gui.log("Escuchando en puerto " + puerto);
-            while (activo) {
-                Socket cliente = serverSocket.accept();
-                cliente.setTcpNoDelay(true);
+        while (activo) {
+            try (ServerSocket ss = new ServerSocket(puerto)) {
+                this.serverSocket = ss;
+                gui.log(puerto, "Servidor activo en el puerto " + puerto);
 
-                PrintWriter out = new PrintWriter(new OutputStreamWriter(cliente.getOutputStream()), true);
-                ClienteInfo info = new ClienteInfo(cliente, out, generarAliasTemporal(cliente));
-                clientes.put(cliente, info);
+                while (activo) {
+                    Socket clientSocket = ss.accept();
+                    ClienteInfo info = new ClienteInfo(clientSocket);
+                    clientes.put(clientSocket, info);
 
-                new Thread(() -> manejarCliente(info)).start();
+                    new Thread(() -> manejarCliente(info)).start();
+                }
+
+            } catch (IOException e) {
+                if (activo) {
+                    gui.log(puerto, "⚠ Error en puerto " + puerto + ": " + e.getMessage());
+                    gui.log(puerto, "⏳ Reiniciando servidor en 3 segundos...");
+                    try {
+                        Thread.sleep(3000);
+                    } catch (InterruptedException ex) {
+                        break;
+                    }
+                }
             }
-        } catch (SocketException se) {
-            if (activo) gui.log("Error de socket en puerto " + puerto + ": " + se.getMessage());
-        } catch (IOException e) {
-            if (activo) gui.log("Error en puerto " + puerto + ": " + e.getMessage());
-        } finally {
-            cerrarTodo();
         }
     }
 
@@ -149,23 +168,22 @@ class ServidorPuerto extends Thread {
         String usuario = info.usuario;
 
         try (BufferedReader in = new BufferedReader(new InputStreamReader(cliente.getInputStream()))) {
-
             String primera = in.readLine();
             if (primera != null && primera.startsWith("USER:")) {
                 usuario = limpiarUsuario(primera.substring("USER:".length()).trim());
                 info.usuario = usuario;
             }
             String horaCon = LocalTime.now().format(HORA_FMT);
-            logYArchivo("** " + usuario + " se ha conectado (puerto " + puerto + ") a las " + horaCon + " **");
+            logYArchivo("** " + usuario + " se ha conectado a las " + horaCon + " **");
             broadcastSistema(usuario + " se ha conectado.");
-            broadcastUsuarios(); // 🔑 enviar lista de usuarios al conectarse
+            broadcastUsuarios();
 
             String linea = primera;
             while (linea != null) {
                 if (linea.startsWith("MSG:")) {
                     String contenido = linea.substring("MSG:".length()).trim();
                     String hora = LocalTime.now().format(HORA_FMT);
-                    String registro = usuario + " envió a las " + hora + " esto : " + contenido;
+                    String registro = usuario + " [" + hora + "]: " + contenido;
                     logYArchivo(registro);
                     broadcast("MSG:" + usuario + "|" + hora + "|" + contenido);
                 } else if (linea.startsWith("MSGTO:")) {
@@ -179,7 +197,7 @@ class ServidorPuerto extends Thread {
                     String base64 = linea.substring("IMG:".length()).trim();
                     String hora = LocalTime.now().format(HORA_FMT);
                     String nombreArchivo = guardarImagen(usuario, base64);
-                    String registro = usuario + " envió a las " + hora + " esto : [imagen guardada en " + nombreArchivo + "]";
+                    String registro = usuario + " [" + hora + "] envió imagen: " + nombreArchivo;
                     logYArchivo(registro);
                     broadcast("IMG:" + usuario + "|" + hora + "|" + base64);
                 }
@@ -190,13 +208,13 @@ class ServidorPuerto extends Thread {
             clientes.remove(cliente);
             try { cliente.close(); } catch (IOException ignored) {}
             String hora = LocalTime.now().format(HORA_FMT);
-            logYArchivo("** " + usuario + " se ha desconectado (puerto " + puerto + ") a las " + hora + " **");
+            logYArchivo("** " + usuario + " se ha desconectado a las " + hora + " **");
             broadcastSistema(usuario + " se ha desconectado.");
-            broadcastUsuarios(); // 🔑 enviar lista de usuarios al desconectarse
+            broadcastUsuarios();
         }
     }
 
-    // ----------------- NUEVOS MÉTODOS -----------------
+    // ---------- Usuarios conectados ----------
     private void broadcastUsuarios() {
         String lista = String.join(",", usuariosConectados());
         for (ClienteInfo ci : clientes.values()) {
@@ -215,7 +233,6 @@ class ServidorPuerto extends Thread {
         }
     }
 
-    // ----------------- MÉTODOS EXISTENTES -----------------
     private void broadcast(String mensaje) {
         for (Map.Entry<Socket, ClienteInfo> entry : clientes.entrySet()) {
             try {
@@ -238,36 +255,30 @@ class ServidorPuerto extends Thread {
             String fileName = ts + "_" + seguro + "." + ext;
             Path destino = dirImgs.resolve(fileName);
             Files.write(destino, bytes, StandardOpenOption.CREATE, StandardOpenOption.WRITE);
-            return dirBase.relativize(destino).toString().replace('\\', '/');
+            return destino.getFileName().toString();
         } catch (Exception e) {
             logYArchivo("(!) Error guardando imagen: " + e.getMessage());
-            return "(error_al_guardar_imagen)";
+            return "(error)";
         }
     }
 
     private String detectarExtension(byte[] b) {
         if (b.length >= 8 && (b[0] & 0xFF) == 0x89 && b[1] == 0x50 && b[2] == 0x4E && b[3] == 0x47) return "png";
-        if (b.length >= 3 && (b[0] & 0xFF) == 0xFF && (b[1] & 0xFF) == 0xD8 && (b[2] & 0xFF) == 0xFF) return "jpg";
-        if (b.length >= 4 && b[0] == 'G' && b[1] == 'I' && b[2] == 'F' && b[3] == '8') return "gif";
+        if (b.length >= 3 && (b[0] & 0xFF) == 0xFF && (b[1] & 0xFF) == 0xD8) return "jpg";
+        if (b.length >= 4 && b[0] == 'G' && b[1] == 'I' && b[2] == 'F') return "gif";
         if (b.length >= 2 && b[0] == 'B' && b[1] == 'M') return "bmp";
-        if (b.length >= 12 && b[0] == 'R' && b[1] == 'I' && b[2] == 'F' && b[3] == 'F' && b[8] == 'W' && b[9] == 'E' && b[10] == 'B' && b[11] == 'P') return "webp";
         return "bin";
     }
 
     private synchronized void logYArchivo(String linea) {
-        gui.log(linea);
+        gui.log(puerto, linea);
         String nombreLog = "log_" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd")) + ".txt";
         Path logFile = dirLogs.resolve(nombreLog);
         try (PrintWriter pw = new PrintWriter(new OutputStreamWriter(new FileOutputStream(logFile.toFile(), true), "UTF-8"), true)) {
             pw.println(linea);
         } catch (IOException e) {
-            gui.log("No se pudo escribir en el log (" + logFile + "): " + e.getMessage());
+            gui.log(puerto, "No se pudo escribir en el log: " + e.getMessage());
         }
-    }
-
-    private String generarAliasTemporal(Socket s) {
-        String suf = Integer.toHexString(System.identityHashCode(s)).toUpperCase();
-        return "Anon_" + suf.substring(Math.max(0, suf.length() - 4));
     }
 
     private String limpiarUsuario(String u) {
@@ -303,10 +314,10 @@ class ServidorPuerto extends Thread {
         final PrintWriter out;
         volatile String usuario;
 
-        ClienteInfo(Socket socket, PrintWriter out, String usuario) {
+        ClienteInfo(Socket socket) throws IOException {
             this.socket = socket;
-            this.out = out;
-            this.usuario = usuario;
+            this.out = new PrintWriter(socket.getOutputStream(), true);
+            this.usuario = "Anon_" + Integer.toHexString(System.identityHashCode(socket));
         }
     }
 }

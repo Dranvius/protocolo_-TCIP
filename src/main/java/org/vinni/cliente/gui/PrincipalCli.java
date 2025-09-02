@@ -3,16 +3,51 @@ package org.vinni.cliente.gui;
 import javax.swing.*;
 import java.io.*;
 import java.net.Socket;
+import java.net.SocketException;
+import java.net.SocketTimeoutException;
 import java.util.Base64;
+
+//Control de rutas
+import java.io.File;
+import java.nio.file.Paths;
+
+//Clase de JSon para ser leido
+import org.vinni.cliente.gui.configuracion.configuracionModelo;
+
+
+// Lector de json
+import com.google.gson.Gson;
+import java.io.FileReader;
+
 
 public class PrincipalCli extends JFrame {
 
+    //Archivo exogeno de control de procesos
+    // JSON
+    Gson gson = new Gson();
+    FileReader reader;
+
+    {
+        try {
+            reader = new FileReader("C:\\Users\\LENOVO\\Documents\\Universidad\\Sistemas_distribuidos\\taller_3\\protocolo_-TCIP\\src\\main\\java\\org\\vinni\\cliente\\gui\\configuracion\\parametros.json");
+        } catch (FileNotFoundException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    // Convertir a objeto Java
+    configuracionModelo configuracion = gson.fromJson(reader, configuracionModelo.class);
+
+    //Pasar a JSon
     private final int[] PORTS = {12345, 12346, 12347, 12348, 12349};
+
+
+    // Controladores de servidor
     private Socket socket;
     private PrintWriter out;
     private BufferedReader in;
-    private String username; // Nombre de usuario del cliente
 
+    private String username; // Nombre de usuario del cliente
     private final principal_cliente ui; // referencia al form generado
 
     public PrincipalCli() {
@@ -58,13 +93,16 @@ public class PrincipalCli extends JFrame {
     /**
      * Conexión al servidor
      */
+
     private void conectar(int port) {
-        JOptionPane.showMessageDialog(this, "Conectando al puerto " + port);
+
         try {
             if (socket != null && !socket.isClosed()) socket.close();
 
             socket = new Socket("localhost", port);
             out = new PrintWriter(socket.getOutputStream(), true);
+
+            // In hace referencia a lo que entra del server
             in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
 
             // Enviar nombre de usuario al servidor
@@ -73,6 +111,7 @@ public class PrincipalCli extends JFrame {
             // Hilo para escuchar respuestas del servidor
             new Thread(() -> {
                 try {
+
                     String fromServer;
                     while ((fromServer = in.readLine()) != null) {
                         if (fromServer.startsWith("USERS:")) {
@@ -89,16 +128,71 @@ public class PrincipalCli extends JFrame {
                         } else {
                             ui.mensajesTxt.append("Servidor(" + port + "): " + fromServer + "\n");
                         }
+
                     }
+
+
+
+                    // Si llegamos aquí, el servidor cerró la conexión
+                    ui.mensajesTxt.append("Conexión perdida. Intentando reconectar...\n");
+                    reinicio(port);
+
                 } catch (IOException ex) {
                     ui.mensajesTxt.append("Conexión cerrada por el servidor.\n");
                 }
             }).start();
 
+
         } catch (IOException e) {
+
             JOptionPane.showMessageDialog(this, "Error conectando: " + e.getMessage());
+
+
         }
     }
+
+    /**
+    * Verificar si el servidor esta operando
+    */
+
+    /**
+     * Intentar reconectar al servidor si se cerró la conexión.
+     */
+    private void reinicio(int puerto) {
+        int maxReintentos = configuracion.timeout; // lo tomas del JSON
+        int intentos = 0;
+
+        while (intentos < maxReintentos) {
+            try {
+                ui.mensajesTxt.append("Intentando reconectar al servidor... (" + (intentos + 1) + "/" + maxReintentos + ")\n");
+
+                // Espera 3 segundos antes de reintentar
+                Thread.sleep(3000);
+
+                // Intentar reconectar
+                socket = new Socket("localhost", puerto);
+                out = new PrintWriter(socket.getOutputStream(), true);
+                in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+
+                // Reenviar usuario al servidor
+                out.println("USER:" + username);
+
+                ui.mensajesTxt.append("Reconexión exitosa al servidor en el puerto " + puerto + " \n");
+
+                // Reiniciar el hilo de escucha
+                escucharServidor(puerto);
+
+                return; // salir porque ya se reconectó
+
+            } catch (Exception e) {
+                intentos++;
+                ui.mensajesTxt.append("Error al reconectar: " + e.getMessage() + "\n");
+            }
+        }
+
+        ui.mensajesTxt.append("No se pudo reconectar al servidor después de " + maxReintentos + " intentos ❌\n");
+    }
+
 
     /**
      * Enviar mensaje (público o privado según destinatario)
@@ -148,7 +242,43 @@ public class PrincipalCli extends JFrame {
         }
     }
 
+    /*
+    Intenta conectarse de nuevo
+    * */
+    private void escucharServidor(int port) {
+        new Thread(() -> {
+            try {
+                String fromServer;
+                while ((fromServer = in.readLine()) != null) {
+                    if (fromServer.startsWith("USERS:")) {
+                        String[] usuarios = fromServer.substring(6).split(",");
+                        SwingUtilities.invokeLater(() -> {
+                            ui.usuariosCombo.removeAllItems();
+                            for (String u : usuarios) {
+                                if (!u.trim().isEmpty()) {
+                                    ui.usuariosCombo.addItem(u);
+                                }
+                            }
+                        });
+                    } else {
+                        ui.mensajesTxt.append("Servidor(" + port + "): " + fromServer + "\n");
+                    }
+                }
+
+                // Si llegamos aquí, el servidor cerró la conexión
+                ui.mensajesTxt.append("Conexión perdida. Intentando reconectar...\n");
+                reinicio(port);
+
+            } catch (IOException ex) {
+                ui.mensajesTxt.append("Conexión cerrada por el servidor. Intentando reconectar...\n");
+                reinicio(port);
+            }
+        }).start();
+    }
+
     public static void main(String[] args) {
+        SwingUtilities.invokeLater(() -> new PrincipalCli().setVisible(true));
+        SwingUtilities.invokeLater(() -> new PrincipalCli().setVisible(true));
         SwingUtilities.invokeLater(() -> new PrincipalCli().setVisible(true));
     }
 }

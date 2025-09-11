@@ -1,62 +1,104 @@
 package org.vinni.servidor.gui;
 
+import org.vinni.servidor.gui.monitor.MonitorServidor;
+import org.vinni.servidor.core.ServidorPuerto;
+
 import javax.swing.*;
 import java.io.*;
-import java.net.*;
 import java.nio.file.*;
-import java.time.LocalDateTime;
-import java.time.LocalTime;
-import java.time.format.DateTimeFormatter;
-import java.util.Base64;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
+/**
+ * Ventana principal del servidor multipuerto.
+ * - Controla 5 servidores TCP en paralelo (puertos definidos en PUERTOS).
+ * - Cada puerto se maneja con un botón y un área de log.
+ * - Incluye persistencia de estado y reinicio automático.
+ * - Integra un monitor para ver el estado de todos los puertos.
+ * - Recibe imágenes desde los clientes y las guarda en disco.
+ */
 public class PrincipalSrv extends JFrame {
-
 
     private final Servidor_interfaz ui;
 
-
+    // Puertos configurados
     private final int[] PUERTOS = {12345, 12346, 12347, 12348, 12349};
 
-
+    // Mapas para gestión de servidores, botones y logs
     private final ConcurrentHashMap<Integer, ServidorPuerto> servidores = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<Integer, JRadioButton> botonesPorPuerto = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<Integer, JTextArea> areasPorPuerto = new ConcurrentHashMap<>();
+
+    // Mapas para usuarios conectados por puerto
+    private final ConcurrentHashMap<Integer, Set<String>> usuariosPorPuerto = new ConcurrentHashMap<>();
+
+    // Mapas para clientes ya reportados por monitor (solo para evitar mensajes duplicados)
+    private final ConcurrentHashMap<Integer, Set<String>> clientesMonitorReportados = new ConcurrentHashMap<>();
+
+    // --- Singleton de instancia activa ---
+    private static volatile PrincipalSrv instanciaActiva;
+
+    // --- Monitor asociado ---
+    private MonitorServidor monitor;
+
+    // --- Archivo de persistencia ---
+    private final Path estadoFile = Paths.get("server_data", "estado_puertos.txt");
 
     public PrincipalSrv() {
         ui = new Servidor_interfaz();
 
         setContentPane(ui.BG_SERVER);
         setTitle("Servidor TCP - Multi Puerto");
-        setDefaultCloseOperation(EXIT_ON_CLOSE);
+        setDefaultCloseOperation(DISPOSE_ON_CLOSE);
         setSize(700, 600);
         setLocationRelativeTo(null);
 
-
+        // Configurar cada puerto con su botón y log
         configurarPuerto(12345, ui.a12345RadioButton, ui.textArea1);
         configurarPuerto(12346, ui.a12346RadioButton, ui.textArea2);
         configurarPuerto(12347, ui.a12347RadioButton, ui.textArea3);
         configurarPuerto(12348, ui.a12348RadioButton, ui.textArea4);
         configurarPuerto(12349, ui.a12349RadioButton, ui.textArea5);
+
+        // Guardar instancia activa
+        instanciaActiva = this;
+
+        // Restaurar estado previo
+        restaurarEstado();
+    }
+
+    // --- acceso desde el monitor ---
+    public static PrincipalSrv getInstanciaActiva() {
+        return instanciaActiva;
     }
 
     private void configurarPuerto(int puerto, JRadioButton boton, JTextArea area) {
         botonesPorPuerto.put(puerto, boton);
         areasPorPuerto.put(puerto, area);
+        usuariosPorPuerto.put(puerto, ConcurrentHashMap.newKeySet());
+        clientesMonitorReportados.put(puerto, ConcurrentHashMap.newKeySet());
 
-        boton.addActionListener(e -> {
-            if (boton.isSelected()) {
-                iniciarServidor(puerto);
-                boton.setText("Puerto " + puerto + " ✅ Encendido");
-            } else {
-                detenerServidor(puerto);
-                boton.setText("Puerto " + puerto + " ⛔ Apagado");
-            }
-        });
+        if (boton != null) {
+            boton.addActionListener(e -> {
+                if (boton.isSelected()) {
+                    try {
+                        iniciarServidor(puerto);
+                        boton.setText("Puerto " + puerto + " ✅ Encendido");
+                    } catch (IOException ex) {
+                        JOptionPane.showMessageDialog(this,
+                                "Error al iniciar servidor en puerto " + puerto + ": " + ex.getMessage(),
+                                "Error", JOptionPane.ERROR_MESSAGE);
+                        boton.setSelected(false);
+                    }
+                } else {
+                    detenerServidor(puerto);
+                    boton.setText("Puerto " + puerto + " ⛔ Apagado");
+                }
+            });
+        }
     }
 
-    private void iniciarServidor(int puerto) {
+    public void iniciarServidor(int puerto) throws IOException {
         if (!servidores.containsKey(puerto)) {
             ServidorPuerto servidor = new ServidorPuerto(puerto, this);
             servidores.put(puerto, servidor);
@@ -71,7 +113,8 @@ public class PrincipalSrv extends JFrame {
             servidor.detener();
             log(puerto, "Servidor detenido en puerto " + puerto);
 
-            // Reinicio automático después de 3 segundos
+            limpiarClientesReportados(puerto);
+
             new Thread(() -> {
                 try {
                     Thread.sleep(3000);
@@ -83,11 +126,10 @@ public class PrincipalSrv extends JFrame {
                             boton.setText("Puerto " + puerto + " ✅ Encendido");
                         }
                     });
-                } catch (InterruptedException ignored) {}
+                } catch (InterruptedException | IOException ignored) {}
             }).start();
         }
     }
-
 
     public void log(int puerto, String mensaje) {
         JTextArea area = areasPorPuerto.get(puerto);
@@ -96,228 +138,111 @@ public class PrincipalSrv extends JFrame {
         }
     }
 
-    public static void main(String[] args) {
-        SwingUtilities.invokeLater(() -> new PrincipalSrv().setVisible(true));
+    // ---------- Gestión de usuarios ----------
+    public void agregarUsuario(int puerto, String usuario) {
+        Set<String> usuarios = usuariosPorPuerto.get(puerto);
+        if (usuarios != null) usuarios.add(usuario);
     }
-}
 
-// ---------------- CLASE AUXILIAR ----------------
-class ServidorPuerto extends Thread {
-
-    private static final DateTimeFormatter HORA_FMT = DateTimeFormatter.ofPattern("HH:mm:ss");
-    private static final DateTimeFormatter TS_FILE_FMT = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss_SSS");
-
-    private final int puerto;
-    private final PrincipalSrv gui;
-    private ServerSocket serverSocket;
-    private volatile boolean activo = true;
-
-    private final ConcurrentHashMap<Socket, ClienteInfo> clientes = new ConcurrentHashMap<>();
-
-    private final Path dirBase;
-    private final Path dirLogs;
-    private final Path dirImgs;
-
-    public ServidorPuerto(int puerto, PrincipalSrv gui) {
-        this.puerto = puerto;
-        this.gui = gui;
-
-        this.dirBase = Paths.get("server_data", "port_" + puerto);
-        this.dirLogs = dirBase.resolve("logs");
-        this.dirImgs = dirBase.resolve("images");
-
-        try {
-            Files.createDirectories(dirLogs);
-            Files.createDirectories(dirImgs);
-        } catch (IOException e) {
-            gui.log(puerto, "No se pudieron crear directorios para el puerto " + puerto + ": " + e.getMessage());
+    public void removerUsuario(int puerto, String usuario) {
+        Set<String> usuarios = usuariosPorPuerto.get(puerto);
+        if (usuarios != null) {
+            usuarios.remove(usuario);
+            clientesMonitorReportados.getOrDefault(puerto, Collections.emptySet()).remove(usuario);
         }
     }
+
+    public Set<String> obtenerUsuarios(int puerto) {
+        return usuariosPorPuerto.getOrDefault(puerto, Collections.emptySet());
+    }
+
+    // ---------- Gestión de clientes para el monitor ----------
+    public boolean clienteYaReportado(int puerto, String ipCliente) {
+        Set<String> reportados = clientesMonitorReportados.get(puerto);
+        return reportados != null && reportados.contains(ipCliente);
+    }
+
+    public void marcarClienteReportado(int puerto, String ipCliente) {
+        Set<String> reportados = clientesMonitorReportados.get(puerto);
+        if (reportados != null) reportados.add(ipCliente);
+    }
+
+    public void limpiarClientesReportados(int puerto) {
+        Set<String> reportados = clientesMonitorReportados.get(puerto);
+        if (reportados != null) reportados.clear();
+    }
+
+    // ---------- Persistencia del estado ----------
+    private void guardarEstado() {
+        try {
+            Files.createDirectories(estadoFile.getParent());
+            try (PrintWriter pw = new PrintWriter(Files.newBufferedWriter(estadoFile))) {
+                for (int puerto : PUERTOS) {
+                    if (servidores.containsKey(puerto)) pw.println("PUERTO:" + puerto);
+                }
+                if (monitor != null && monitor.isVisible()) pw.println("MONITOR:1");
+            }
+        } catch (IOException e) {
+            System.err.println("No se pudo guardar estado: " + e.getMessage());
+        }
+    }
+
+    private void restaurarEstado() {
+        if (Files.exists(estadoFile)) {
+            try {
+                for (String linea : Files.readAllLines(estadoFile)) {
+                    if (linea.startsWith("PUERTO:")) {
+                        int puerto = Integer.parseInt(linea.substring("PUERTO:".length()).trim());
+                        iniciarServidor(puerto);
+                        JRadioButton boton = botonesPorPuerto.get(puerto);
+                        if (boton != null) {
+                            boton.setSelected(true);
+                            boton.setText("Puerto " + puerto + " ✅ Encendido");
+                        }
+                    } else if (linea.startsWith("MONITOR:")) {
+                        SwingUtilities.invokeLater(() -> {
+                            monitor = new MonitorServidor(this);
+                            monitor.setDefaultCloseOperation(JFrame.DISPOSE_ON_CLOSE);
+                            monitor.setVisible(true);
+                        });
+                    }
+                }
+            } catch (IOException e) {
+                System.err.println("No se pudo restaurar estado: " + e.getMessage());
+            }
+        }
+    }
+
+    public int[] getPuertos() { return PUERTOS.clone(); }
+
+    public JRadioButton getBotonPorPuerto(int puerto) { return botonesPorPuerto.get(puerto); }
+
+    public JTextArea getAreaPorPuerto(int puerto) { return areasPorPuerto.get(puerto); }
 
     @Override
-    public void run() {
-        while (activo) {
-            try (ServerSocket ss = new ServerSocket(puerto)) {
-                this.serverSocket = ss;
-                gui.log(puerto, "Servidor activo en el puerto " + puerto);
-
-                while (activo) {
-                    Socket clientSocket = ss.accept();
-                    ClienteInfo info = new ClienteInfo(clientSocket);
-                    clientes.put(clientSocket, info);
-
-                    new Thread(() -> manejarCliente(info)).start();
-                }
-
-            } catch (IOException e) {
-                if (activo) {
-                    gui.log(puerto, "⚠ Error en puerto " + puerto + ": " + e.getMessage());
-                    gui.log(puerto, "⏳ Reiniciando servidor en 3 segundos...");
-                    try {
-                        Thread.sleep(3000);
-                    } catch (InterruptedException ex) {
-                        break;
-                    }
-                }
-            }
+    public void dispose() {
+        guardarEstado();
+        for (ServidorPuerto servidor : servidores.values()) {
+            try { servidor.detener(); } catch (Exception ignored) {}
         }
+        servidores.clear();
+        instanciaActiva = null;
+        super.dispose();
     }
 
-    private void manejarCliente(ClienteInfo info) {
-        Socket cliente = info.socket;
-        String usuario = info.usuario;
-
-        try (BufferedReader in = new BufferedReader(new InputStreamReader(cliente.getInputStream()))) {
-            String primera = in.readLine();
-            if (primera != null && primera.startsWith("USER:")) {
-                usuario = limpiarUsuario(primera.substring("USER:".length()).trim());
-                info.usuario = usuario;
-            }
-            String horaCon = LocalTime.now().format(HORA_FMT);
-            logYArchivo("** " + usuario + " se ha conectado a las " + horaCon + " **");
-            broadcastSistema(usuario + " se ha conectado.");
-            broadcastUsuarios();
-
-            String linea = primera;
-            while (linea != null) {
-                if (linea.startsWith("MSG:")) {
-                    String contenido = linea.substring("MSG:".length()).trim();
-                    String hora = LocalTime.now().format(HORA_FMT);
-                    String registro = usuario + " [" + hora + "]: " + contenido;
-                    logYArchivo(registro);
-                    broadcast("MSG:" + usuario + "|" + hora + "|" + contenido);
-                } else if (linea.startsWith("MSGTO:")) {
-                    String[] parts = linea.split(":", 3);
-                    if (parts.length == 3) {
-                        String destinatario = parts[1].trim();
-                        String contenido = parts[2].trim();
-                        enviarPrivado(destinatario, "[Privado de " + usuario + "]: " + contenido);
-                    }
-                } else if (linea.startsWith("IMG:")) {
-                    String base64 = linea.substring("IMG:".length()).trim();
-                    String hora = LocalTime.now().format(HORA_FMT);
-                    String nombreArchivo = guardarImagen(usuario, base64);
-                    String registro = usuario + " [" + hora + "] envió imagen: " + nombreArchivo;
-                    logYArchivo(registro);
-                    broadcast("IMG:" + usuario + "|" + hora + "|" + base64);
-                }
-                linea = in.readLine();
-            }
-        } catch (IOException ignored) {
-        } finally {
-            clientes.remove(cliente);
-            try { cliente.close(); } catch (IOException ignored) {}
-            String hora = LocalTime.now().format(HORA_FMT);
-            logYArchivo("** " + usuario + " se ha desconectado a las " + hora + " **");
-            broadcastSistema(usuario + " se ha desconectado.");
-            broadcastUsuarios();
-        }
+    public void reiniciarPuerto(int puerto) {
+        detenerServidor(puerto);
+        log(puerto, "Puerto " + puerto + " reiniciado manualmente desde PrincipalSrv.");
     }
 
-    // ---------- Usuarios conectados ----------
-    private void broadcastUsuarios() {
-        String lista = String.join(",", usuariosConectados());
-        for (ClienteInfo ci : clientes.values()) {
-            try {
-                ci.out.println("USERS:" + lista);
-            } catch (Exception ignored) {}
-        }
-    }
+    public static void main(String[] args) {
+        SwingUtilities.invokeLater(() -> {
+            PrincipalSrv principal = new PrincipalSrv();
+            principal.setVisible(true);
 
-    private void enviarPrivado(String destinatario, String mensaje) {
-        for (ClienteInfo ci : clientes.values()) {
-            if (ci.usuario.equals(destinatario)) {
-                ci.out.println(mensaje);
-                return;
-            }
-        }
-    }
-
-    private void broadcast(String mensaje) {
-        for (Map.Entry<Socket, ClienteInfo> entry : clientes.entrySet()) {
-            try {
-                entry.getValue().out.println(mensaje);
-            } catch (Exception ignored) {}
-        }
-    }
-
-    private void broadcastSistema(String texto) {
-        String hora = LocalTime.now().format(HORA_FMT);
-        broadcast("SYS:" + hora + "|" + texto);
-    }
-
-    private String guardarImagen(String usuario, String base64) {
-        try {
-            byte[] bytes = Base64.getDecoder().decode(base64);
-            String ext = detectarExtension(bytes);
-            String seguro = usuario.replaceAll("[^a-zA-Z0-9_\\-\\.]", "_");
-            String ts = LocalDateTime.now().format(TS_FILE_FMT);
-            String fileName = ts + "_" + seguro + "." + ext;
-            Path destino = dirImgs.resolve(fileName);
-            Files.write(destino, bytes, StandardOpenOption.CREATE, StandardOpenOption.WRITE);
-            return destino.getFileName().toString();
-        } catch (Exception e) {
-            logYArchivo("(!) Error guardando imagen: " + e.getMessage());
-            return "(error)";
-        }
-    }
-
-    private String detectarExtension(byte[] b) {
-        if (b.length >= 8 && (b[0] & 0xFF) == 0x89 && b[1] == 0x50 && b[2] == 0x4E && b[3] == 0x47) return "png";
-        if (b.length >= 3 && (b[0] & 0xFF) == 0xFF && (b[1] & 0xFF) == 0xD8) return "jpg";
-        if (b.length >= 4 && b[0] == 'G' && b[1] == 'I' && b[2] == 'F') return "gif";
-        if (b.length >= 2 && b[0] == 'B' && b[1] == 'M') return "bmp";
-        return "bin";
-    }
-
-    private synchronized void logYArchivo(String linea) {
-        gui.log(puerto, linea);
-        String nombreLog = "log_" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd")) + ".txt";
-        Path logFile = dirLogs.resolve(nombreLog);
-        try (PrintWriter pw = new PrintWriter(new OutputStreamWriter(new FileOutputStream(logFile.toFile(), true), "UTF-8"), true)) {
-            pw.println(linea);
-        } catch (IOException e) {
-            gui.log(puerto, "No se pudo escribir en el log: " + e.getMessage());
-        }
-    }
-
-    private String limpiarUsuario(String u) {
-        if (u == null || u.trim().isEmpty()) return "Usuario";
-        String v = u.trim();
-        if (v.length() > 32) v = v.substring(0, 32);
-        return v.replaceAll("[\\r\\n\\t|]", "_");
-    }
-
-    private String[] usuariosConectados() {
-        return clientes.values().stream().map(ci -> ci.usuario).distinct().sorted().toArray(String[]::new);
-    }
-
-    public void detener() {
-        activo = false;
-        try {
-            if (serverSocket != null && !serverSocket.isClosed()) serverSocket.close();
-        } catch (IOException ignored) {}
-        cerrarTodo();
-    }
-
-    private void cerrarTodo() {
-        for (Map.Entry<Socket, ClienteInfo> e : clientes.entrySet()) {
-            try {
-                e.getKey().close();
-            } catch (IOException ignored) {}
-        }
-        clientes.clear();
-    }
-
-    private static class ClienteInfo {
-        final Socket socket;
-        final PrintWriter out;
-        volatile String usuario;
-
-        ClienteInfo(Socket socket) throws IOException {
-            this.socket = socket;
-            this.out = new PrintWriter(socket.getOutputStream(), true);
-            this.usuario = "Anon_" + Integer.toHexString(System.identityHashCode(socket));
-        }
+            principal.monitor = new MonitorServidor(principal);
+            principal.monitor.setDefaultCloseOperation(JFrame.DISPOSE_ON_CLOSE);
+            principal.monitor.setVisible(true);
+        });
     }
 }
